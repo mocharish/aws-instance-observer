@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AWS CPU Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    
+    <style>
+        body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; margin: 0; background: #f4f6fb; color: #1f2a44; }
+        .page { max-width: 980px; margin: 32px auto; padding: 0 16px; }
+        .container { background: white; padding: 24px; border-radius: 14px; box-shadow: 0 10px 24px rgba(31, 42, 68, 0.08); }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+        .title { font-size: 22px; font-weight: 600; margin: 0; }
+        .subtitle { font-size: 13px; color: #5b6b8d; margin: 4px 0 0; }
+
+        .controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+        .field { text-align: left; }
+        .field label { display: block; font-size: 12px; color: #5b6b8d; margin-bottom: 6px; }
+        .field input { width: 100%; padding: 10px 12px; border: 1px solid #d7deee; border-radius: 8px; font-size: 14px; }
+        .field input:focus { outline: none; border-color: #5b8cff; box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.15); }
+        .helper { font-size: 12px; color: #7a8aaa; margin-top: 6px; }
+
+        .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+        button { padding: 10px 18px; font-size: 14px; cursor: pointer; background: #2f6bff; color: white; border: none; border-radius: 8px; }
+        button:hover { background: #2557d6; }
+
+        #status { padding: 8px 12px; border-radius: 8px; font-size: 13px; display: inline-block; }
+        .status-info { background: #eef4ff; color: #1f3b8a; border: 1px solid #c9d8ff; }
+        .status-warn { background: #fff4e5; color: #8a4b00; border: 1px solid #ffd4a3; }
+        .status-hidden { display: none; }
+
+        .chart-wrap { border: 1px solid #eef1f7; border-radius: 12px; padding: 12px; background: #fbfcff; }
+        canvas { width: 100% !important; height: 400px !important; }
+
+        @media (max-width: 800px) {
+            .controls { grid-template-columns: 1fr; }
+            .header { flex-direction: column; align-items: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="container">
+            <div class="header">
+                <div>
+                    <h2 class="title">AWS Instance Performance Monitor</h2>
+                    <div class="subtitle">CPU usage over time for a selected instance</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <div class="field">
+                    <label for="ipInput">IP Address</label>
+                    <input id="ipInput" type="text" value="172.31.88.161" />
+                    <div class="helper">Private IP of the EC2 instance.</div>
+                </div>
+                <div class="field">
+                    <label for="periodInput">Period (minutes)</label>
+                    <input id="periodInput" type="number" value="60" min="1" />
+                    <div class="helper">How far back to query.</div>
+                </div>
+                <div class="field">
+                    <label for="intervalInput">Interval (seconds)</label>
+                    <input id="intervalInput" type="number" value="300" min="60" />
+                    <div class="helper">Sample resolution.</div>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button onclick="load()">Show CPU Chart</button>
+                <div id="status" class="status-hidden"></div>
+            </div>
+
+            <div class="chart-wrap">
+                <canvas id="myChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let myChart = null; 
+
+        async function load() {
+            try {
+                const ip = document.getElementById('ipInput').value.trim();
+                const period = document.getElementById('periodInput').value;
+                const interval = document.getElementById('intervalInput').value;
+
+                const statusEl = document.getElementById('status');
+                statusEl.textContent = '';
+                statusEl.className = 'status-hidden';
+
+                const url = new URL('http://127.0.0.1:5050/api/metrics');
+                url.searchParams.set('ip', ip);
+                url.searchParams.set('period', period);
+                url.searchParams.set('interval', interval);
+
+                const res = await fetch(url.toString());
+                const data = await res.json();
+
+                if (!res.ok || data.error) {
+                    statusEl.textContent = data.error || 'Request failed';
+                    statusEl.className = 'status-warn';
+                    return;
+                }
+
+                if (!data.datapoints || data.datapoints.length === 0) {
+                    statusEl.textContent = 'No datapoints returned for this range.';
+                    statusEl.className = 'status-warn';
+                    return;
+                }
+
+                if (data.safety_status) {
+                    statusEl.textContent = data.safety_status;
+                    statusEl.className = data.safety_status.startsWith('Safety note:')
+                        ? 'status-warn'
+                        : 'status-info';
+                }
+
+                const labels = data.datapoints.map(p => new Date(p.Timestamp));
+                const values = data.datapoints.map(p => p.Average);
+
+                if (myChart !== null) {
+                    myChart.destroy();
+                }
+
+                const ctx = document.getElementById('myChart').getContext('2d');
+                myChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'CPU %',
+                            data: values,
+                            borderColor: '#007bff',
+                            backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                type: 'time', 
+                                time: { unit: 'minute' },
+                                title: { display: true, text: 'Time (UTC)' }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: 'Usage %' }
+                            }
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error("Dashboard error:", err);
+            }
+        }
+    </script>
+</body>
+</html>
